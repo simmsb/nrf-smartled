@@ -1,11 +1,8 @@
 //! Smartleds using the PWM peripheral
 
-#[allow(unused)]
-use crate::hal;
-
-use crate::hal::{
-    gpio::{Level, Output, Pin, PushPull},
-    pac,
+use embassy_nrf::{
+    gpio::{AnyPin, Level, Output, Pin, Port},
+    pac, Unborrow,
 };
 
 use core::sync::atomic::{compiler_fence, Ordering};
@@ -52,44 +49,52 @@ pub fn fill_buf(color: &RGB8, buf: &mut [u16]) -> Result<(), ()> {
 }
 
 /// A PWM peripheral driven Smartled driver
-pub struct Pwm<T: sealed::Instance> {
+pub struct Pwm<'a, T: sealed::Instance> {
     pwm: T,
-    _gpio: Pin<Output<PushPull>>,
+    _gpio: Output<'a, AnyPin>,
 }
 
-impl<T> Pwm<T>
+impl<'a, T> Pwm<'a, T>
 where
     T: sealed::Instance,
 {
     /// Create a new Smartled driver with a given pin and PWM engine
-    pub fn new<Mode>(pwm: T, pin: Pin<Mode>) -> Pwm<T> {
-        let pin = pin.into_push_pull_output(Level::Low);
+    pub fn new<P: Pin + Unborrow<Target = P> + 'a>(pwm: T, pin: P) -> Self {
+        let port = pin.port();
+        let pin_n = pin.pin();
+        let pin = Output::new(
+            pin.degrade(),
+            Level::Low,
+            embassy_nrf::gpio::OutputDrive::Standard,
+        );
 
-        pwm.psel.out[0].write(|w| {
+        pwm.regs().psel.out[0].write(|w| {
             #[cfg(feature = "52840")]
-            match pin.port() {
-                hal::gpio::Port::Port0 => w.port().clear_bit(),
-                hal::gpio::Port::Port1 => w.port().set_bit(),
+            match port {
+                Port::Port0 => w.port().clear_bit(),
+                Port::Port1 => w.port().set_bit(),
             };
             unsafe {
-                w.pin().bits(pin.pin());
+                w.pin().bits(pin_n);
             }
             w.connect().connected()
         });
 
-        pwm.enable.write(|w| w.enable().enabled());
-        pwm.mode.write(|w| w.updown().up());
-        pwm.prescaler.write(|w| w.prescaler().div_1());
-        pwm.countertop.write(|w| unsafe { w.countertop().bits(20) });
-        pwm.loop_.write(|w| w.cnt().disabled());
-        pwm.decoder.write(|w| {
+        pwm.regs().enable.write(|w| w.enable().enabled());
+        pwm.regs().mode.write(|w| w.updown().up());
+        pwm.regs().prescaler.write(|w| w.prescaler().div_1());
+        pwm.regs()
+            .countertop
+            .write(|w| unsafe { w.countertop().bits(20) });
+        pwm.regs().loop_.write(|w| w.cnt().disabled());
+        pwm.regs().decoder.write(|w| {
             w.load().common();
             w.mode().refresh_count()
         });
-        pwm.seq0.refresh.write(|w| unsafe { w.bits(0) });
-        pwm.seq0.enddelay.write(|w| unsafe { w.bits(0) });
-        pwm.seq1.refresh.write(|w| unsafe { w.bits(0) });
-        pwm.seq1.enddelay.write(|w| unsafe { w.bits(0) });
+        pwm.regs().seq0.refresh.write(|w| unsafe { w.bits(0) });
+        pwm.regs().seq0.enddelay.write(|w| unsafe { w.bits(0) });
+        pwm.regs().seq1.refresh.write(|w| unsafe { w.bits(0) });
+        pwm.regs().seq1.enddelay.write(|w| unsafe { w.bits(0) });
 
         Pwm { pwm, _gpio: pin }
     }
@@ -106,18 +111,25 @@ where
             return Err(());
         }
 
-        if (((*buf).as_ptr() as usize) < hal::target_constants::SRAM_LOWER)
-            || (((*buf).as_ptr() as usize) > hal::target_constants::SRAM_UPPER)
+        if (((*buf).as_ptr() as usize) < 0x2000_0000) || (((*buf).as_ptr() as usize) > 0x3000_0000)
         {
             return Err(());
         }
 
         compiler_fence(Ordering::SeqCst);
 
-        self.pwm.seq0.ptr.write(|w| w.bits((*buf).as_ptr() as u32));
-        self.pwm.seq0.cnt.write(|w| w.bits((*buf).len() as u32));
-        self.pwm.events_seqend[0].write(|w| w.bits(0));
-        self.pwm.tasks_seqstart[0].write(|w| w.bits(1));
+        self.pwm
+            .regs()
+            .seq0
+            .ptr
+            .write(|w| w.bits((*buf).as_ptr() as u32));
+        self.pwm
+            .regs()
+            .seq0
+            .cnt
+            .write(|w| w.bits((*buf).len() as u32));
+        self.pwm.regs().events_seqend[0].write(|w| w.bits(0));
+        self.pwm.regs().tasks_seqstart[0].write(|w| w.bits(1));
 
         Ok(())
     }
@@ -132,16 +144,23 @@ where
             return Err(());
         }
 
-        if (((*buf).as_ptr() as usize) < hal::target_constants::SRAM_LOWER)
-            || (((*buf).as_ptr() as usize) > hal::target_constants::SRAM_UPPER)
+        if (((*buf).as_ptr() as usize) < 0x2000_0000) || (((*buf).as_ptr() as usize) > 0x3000_0000)
         {
             return Err(());
         }
 
         compiler_fence(Ordering::SeqCst);
 
-        self.pwm.seq1.ptr.write(|w| w.bits((*buf).as_ptr() as u32));
-        self.pwm.seq1.cnt.write(|w| w.bits((*buf).len() as u32));
+        self.pwm
+            .regs()
+            .seq1
+            .ptr
+            .write(|w| w.bits((*buf).as_ptr() as u32));
+        self.pwm
+            .regs()
+            .seq1
+            .cnt
+            .write(|w| w.bits((*buf).len() as u32));
 
         Ok(())
     }
@@ -151,7 +170,7 @@ where
     /// Note: You probably shouldn't use this function unless you
     /// are also using Pwm::start_send_raw().
     pub fn is_done_raw(&self) -> bool {
-        self.pwm.events_seqend[0].read().bits() == 1
+        self.pwm.regs().events_seqend[0].read().bits() == 1
     }
 
     /// Send a series of colors and a stop pattern, using a given scratch space
@@ -177,7 +196,7 @@ where
         }
 
         // Disable looping, this is a one-shot
-        self.pwm.loop_.write(|w| w.cnt().disabled());
+        self.pwm.regs().loop_.write(|w| w.cnt().disabled());
 
         // Safety: we block until the DMA transaction is complete
         unsafe {
@@ -203,7 +222,7 @@ pub const fn u16s_needed_ct(leds: usize) -> usize {
     leds * 24 + 40
 }
 
-impl<T> SmartLedsWrite for Pwm<T>
+impl<'a, T> SmartLedsWrite for Pwm<'a, T>
 where
     T: sealed::Instance,
 {
@@ -246,8 +265,8 @@ where
 
         unsafe {
             // Set the back half, and set + start the front half
-            self.pwm.loop_.write(|w| unsafe { w.cnt().bits(1) });
-            self.pwm.events_loopsdone.write(|w| w.bits(0));
+            self.pwm.regs().loop_.write(|w| unsafe { w.cnt().bits(1) });
+            self.pwm.regs().events_loopsdone.write(|w| w.bits(0));
             self.set_seq1_raw(&buf_b);
             self.start_send_raw(&buf_a);
         }
@@ -308,13 +327,13 @@ where
                 // > 2 blanks: Shouldn't happen.
 
                 // wait until the A+B loop is done
-                while self.pwm.events_loopsdone.read().bits() == 0 {}
+                while self.pwm.regs().events_loopsdone.read().bits() == 0 {}
 
                 // start seq[0] as quickly as possible
                 unsafe {
-                    self.pwm.tasks_seqstart[0].write(|w| w.bits(1));
-                    self.pwm.events_seqend[0].write(|w| w.bits(0));
-                    self.pwm.events_loopsdone.write(|w| w.bits(0));
+                    self.pwm.regs().tasks_seqstart[0].write(|w| w.bits(1));
+                    self.pwm.regs().events_seqend[0].write(|w| w.bits(0));
+                    self.pwm.regs().events_loopsdone.write(|w| w.bits(0));
                 }
 
                 compiler_fence(Ordering::SeqCst);
@@ -340,7 +359,7 @@ where
         }
 
         // Wait until the last loop is done
-        while self.pwm.events_loopsdone.read().bits() == 0 {}
+        while self.pwm.regs().events_loopsdone.read().bits() == 0 {}
 
         Ok(())
     }
@@ -350,17 +369,34 @@ where
 // we need to support various configurations
 
 mod sealed {
-    use core::ops::Deref;
-    pub trait Instance: Deref<Target = crate::hal::pac::pwm0::RegisterBlock> {}
+    pub trait Instance {
+        fn regs(&self) -> &'static embassy_nrf::pac::pwm0::RegisterBlock;
+    }
 }
 
-impl sealed::Instance for pac::PWM0 {}
+impl sealed::Instance for embassy_nrf::peripherals::PWM0 {
+    fn regs(&self) -> &'static embassy_nrf::pac::pwm0::RegisterBlock {
+        unsafe { &*pac::PWM0::ptr() }
+    }
+}
 
 #[cfg(not(any(feature = "52810")))]
-impl sealed::Instance for pac::PWM1 {}
+impl sealed::Instance for embassy_nrf::peripherals::PWM1 {
+    fn regs(&self) -> &'static embassy_nrf::pac::pwm0::RegisterBlock {
+        unsafe { &*pac::PWM1::ptr() }
+    }
+}
 
 #[cfg(not(any(feature = "52810")))]
-impl sealed::Instance for pac::PWM2 {}
+impl sealed::Instance for embassy_nrf::peripherals::PWM2 {
+    fn regs(&self) -> &'static embassy_nrf::pac::pwm0::RegisterBlock {
+        unsafe { &*pac::PWM2::ptr() }
+    }
+}
 
 #[cfg(not(any(feature = "52810", feature = "52832")))]
-impl sealed::Instance for pac::PWM3 {}
+impl sealed::Instance for embassy_nrf::peripherals::PWM3 {
+    fn regs(&self) -> &'static embassy_nrf::pac::pwm0::RegisterBlock {
+        unsafe { &*pac::PWM3::ptr() }
+    }
+}
