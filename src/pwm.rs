@@ -2,7 +2,7 @@
 
 use embassy_nrf::{
     gpio::{AnyPin, Level, Output, Pin, Port},
-    pac, Unborrow,
+    pac, Peripheral,
 };
 
 use core::sync::atomic::{compiler_fence, Ordering};
@@ -59,7 +59,7 @@ where
     T: sealed::Instance,
 {
     /// Create a new Smartled driver with a given pin and PWM engine
-    pub fn new<P: Pin + Unborrow<Target = P> + 'a>(pwm: T, pin: P) -> Self {
+    pub fn new<P: Pin + Peripheral<P = P> + 'a>(pwm: T, pin: P) -> Self {
         let port = pin.port();
         let pin_n = pin.pin();
         let pin = Output::new(

@@ -7,19 +7,17 @@ authors = ["James Munns <james.munns@ferrous-systems.com>"]
 edition = "2021"
 readme = "README.md"
 
-categories = [
-    "embedded",
-    "no-std",
-]
+categories = ["embedded", "no-std"]
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-embassy = { git = "https://github.com/embassy-rs/embassy", features = [] }
-embassy-nrf = { git = "https://github.com/embassy-rs/embassy", features = ["unstable-pac"] }
+embassy-nrf = { git = "https://github.com/embassy-rs/embassy", features = [
+  "unstable-pac",
+] }
 smart-leds-trait = "0.2.1"
 
 [features]
-nightly = ["embassy-nrf/nightly", "embassy-nrf/unstable-traits" ]
+nightly = ["embassy-nrf/nightly", "embassy-nrf/unstable-traits"]
 default = ["nightly", "52840"]
 52810 = ["embassy-nrf/nrf52810"]
 52832 = ["embassy-nrf/nrf52832"]
